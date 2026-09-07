@@ -7,12 +7,10 @@ spec = [
     ('posit_price', nb.float64),
     ('posit_bar', nb.int64),
     ('posit_time', nb.int64),
-    ('posit_take', nb.float64),
-    ('posit_stop', nb.float64),
-    ('posit_min', nb.float64),
-    ('posit_max', nb.float64),
-    ('trail_take_dist', nb.float64),
-    ('trail_stop_dist', nb.float64),
+    ('posit_upper', nb.float64),
+    ('posit_lower', nb.float64),
+    ('posit_mae_chg', nb.float64),
+    ('posit_mae_pct', nb.float64),
 
     ('trades_entry_bar', nb.int64[:]),
     ('trades_entry_time', nb.int64[:]),
@@ -21,8 +19,8 @@ spec = [
     ('trades_entry_price', nb.float64[:]),
     ('trades_exit_price', nb.float64[:]),
     ('trades_volume', nb.float64[:]),
-    ('trades_min_price', nb.float64[:]),
-    ('trades_max_price', nb.float64[:]),
+    ('trades_mae_chg', nb.float64[:]),
+    ('trades_mae_pct', nb.float64[:]),
     ('trades_count', nb.int64),
 ]
 
@@ -34,12 +32,10 @@ class BROKER:
         x.posit_price = nan
         x.posit_bar = -1
         x.posit_time = -1
-        x.posit_take = nan
-        x.posit_stop = nan
-        x.posit_min = nan
-        x.posit_max = nan
-        x.trail_take_dist = nan
-        x.trail_stop_dist = nan
+        x.posit_upper = nan
+        x.posit_lower = nan
+        x.posit_mae_chg = nan
+        x.posit_mae_pct = nan
 
         x.trades_entry_bar = np.zeros(max_trades, dtype=np.int64)
         x.trades_entry_time = np.zeros(max_trades, dtype=np.int64)
@@ -48,31 +44,31 @@ class BROKER:
         x.trades_entry_price = np.zeros(max_trades, dtype=np.float64)
         x.trades_exit_price = np.zeros(max_trades, dtype=np.float64)
         x.trades_volume = np.zeros(max_trades, dtype=np.float64)
-        x.trades_min_price = np.zeros(max_trades, dtype=np.float64)
-        x.trades_max_price = np.zeros(max_trades, dtype=np.float64)
+        x.trades_mae_chg = np.zeros(max_trades, dtype=np.float64)
+        x.trades_mae_pct = np.zeros(max_trades, dtype=np.float64)
         x.trades_count = 0
 
     # ---------------- abertura / gestao de posicao ----------------
 
-    def _open_long(x, bar, time, price, volume, prc_take=nan, prc_stop=nan):
+    def _open_long(x, bar, time, price, volume, prc_upper=nan, prc_lower=nan):
         x.posit_volume = abs(volume)
         x.posit_price = price
         x.posit_bar = bar
         x.posit_time = time
-        x.posit_take = prc_take
-        x.posit_stop = prc_stop
-        x.posit_min = price
-        x.posit_max = price
+        x.posit_upper = prc_upper
+        x.posit_lower = prc_lower
+        x.posit_mae_chg = 0.0
+        x.posit_mae_pct = 0.0
 
-    def _open_short(x, bar, time, price, volume, prc_take=nan, prc_stop=nan):
+    def _open_short(x, bar, time, price, volume, prc_upper=nan, prc_lower=nan):
         x.posit_volume = -abs(volume)
         x.posit_price = price
         x.posit_bar = bar
         x.posit_time = time
-        x.posit_take = prc_take
-        x.posit_stop = prc_stop
-        x.posit_min = price
-        x.posit_max = price
+        x.posit_upper = prc_upper
+        x.posit_lower = prc_lower
+        x.posit_mae_chg = 0.0
+        x.posit_mae_pct = 0.0
 
     def _partial_rise(x, bar, time, price, vol_dif, volabs_max):
         old_abs = abs(x.posit_volume)
@@ -86,40 +82,42 @@ class BROKER:
     def _partial_real(x, bar, time, price, vol_dif, volabs_min):
         old_abs = abs(x.posit_volume)
         new_abs = max(old_abs - vol_dif, volabs_min)
-        sign = 1.0 if x.posit_volume >= 0 else -1.0
-        x.posit_volume = sign * new_abs
+        if new_abs <= 0.0:
+            x._close_position(bar, time, price)
+        else:
+            sign = 1.0 if x.posit_volume >= 0 else -1.0
+            x.posit_volume = sign * new_abs
 
     def _update_posit_minmax(x, bar, time, bar_high, bar_low):
-        if np.isnan(x.posit_min) or bar_low < x.posit_min:
-            x.posit_min = bar_low
-        if np.isnan(x.posit_max) or bar_high > x.posit_max:
-            x.posit_max = bar_high
-
-    def _update_trailing_take(x, bar, time, bar_close):
-        # long: take so pode DESCER (aperta em direcao ao preco) | short: take so pode SUBIR
-        if np.isnan(x.trail_take_dist):
+        if x.posit_volume == 0.0:
             return
-        if x.posit_volume > 0:
-            candidate = bar_close + x.trail_take_dist
-            if np.isnan(x.posit_take) or candidate < x.posit_take:
-                x.posit_take = candidate
-        elif x.posit_volume < 0:
-            candidate = bar_close - x.trail_take_dist
-            if np.isnan(x.posit_take) or candidate > x.posit_take:
-                x.posit_take = candidate
+        entry = x.posit_price
+        vol = x.posit_volume
+        sign = 1.0 if vol >= 0 else -1.0
 
-    def _update_trailing_stop(x, bar, time, bar_close):
-        # long: stop so pode SUBIR | short: stop so pode DESCER
-        if np.isnan(x.trail_stop_dist):
+        chg_low = (bar_low - entry) * vol
+        chg_high = (bar_high - entry) * vol
+        candidate_chg = min(chg_low, chg_high)
+        if candidate_chg < x.posit_mae_chg:
+            x.posit_mae_chg = candidate_chg
+
+        pct_low = (bar_low - entry) / entry * sign
+        pct_high = (bar_high - entry) / entry * sign
+        candidate_pct = min(pct_low, pct_high) * 100.0
+        if candidate_pct < x.posit_mae_pct:
+            x.posit_mae_pct = candidate_pct
+
+    def _update_trailing_upper(x, bar, time, new_upper):
+        if np.isnan(new_upper):
             return
-        if x.posit_volume > 0:
-            candidate = bar_close - x.trail_stop_dist
-            if np.isnan(x.posit_stop) or candidate > x.posit_stop:
-                x.posit_stop = candidate
-        elif x.posit_volume < 0:
-            candidate = bar_close + x.trail_stop_dist
-            if np.isnan(x.posit_stop) or candidate < x.posit_stop:
-                x.posit_stop = candidate
+        if np.isnan(x.posit_upper) or new_upper < x.posit_upper:
+            x.posit_upper = new_upper
+
+    def _update_trailing_lower(x, bar, time, new_lower):
+        if np.isnan(new_lower):
+            return
+        if np.isnan(x.posit_lower) or new_lower > x.posit_lower:
+            x.posit_lower = new_lower
 
     def _close_position(x, bar, time, price):
         i = x.trades_count
@@ -130,26 +128,27 @@ class BROKER:
         x.trades_entry_price[i] = x.posit_price
         x.trades_exit_price[i] = price
         x.trades_volume[i] = x.posit_volume
-        x.trades_min_price[i] = x.posit_min
-        x.trades_max_price[i] = x.posit_max
+        x.trades_mae_chg[i] = x.posit_mae_chg
+        x.trades_mae_pct[i] = x.posit_mae_pct
         x.trades_count += 1
 
         x.posit_volume = 0.0
         x.posit_price = nan
         x.posit_bar = -1
         x.posit_time = -1
-        x.posit_take = nan
-        x.posit_stop = nan
-        x.posit_min = nan
-        x.posit_max = nan
+        x.posit_upper = nan
+        x.posit_lower = nan
+        x.posit_mae_chg = nan
+        x.posit_mae_pct = nan
 
     # ---------------- estado da posicao ----------------
 
     def _posit_has(x):
         return x.posit_volume != 0.0
 
-    def _posit_signed_volume(x):
-        return x.posit_volume
+    def _posit_sign_volume(x):
+        sign = 1.0 if x.posit_volume >= 0 else -1.0
+        return sign * x.posit_volume
 
     def _posit_is_long(x):
         return x.posit_volume > 0.0
@@ -157,11 +156,11 @@ class BROKER:
     def _posit_is_short(x):
         return x.posit_volume < 0.0
 
-    def _posit_has_take(x):
-        return not np.isnan(x.posit_take)
+    def _posit_has_upper(x):
+        return not np.isnan(x.posit_upper)
 
-    def _posit_has_stop(x):
-        return not np.isnan(x.posit_stop)
+    def _posit_has_lower(x):
+        return not np.isnan(x.posit_lower)
 
     def _posit_bars_duration(x, bar):
         if x.posit_volume == 0.0:
@@ -171,10 +170,20 @@ class BROKER:
     # ---------------- historico de trades ----------------
 
     def _trades_first_entry_bar(x):
-        return x.trades_entry_bar[0]
+        n = x.trades_count
+        return x.trades_entry_bar[:n]
 
     def _trades_first_entry_time(x):
-        return x.trades_entry_time[0]
+        n = x.trades_count
+        return x.trades_entry_time[:n]
+
+    def _trades_last_exit_bar(x):
+        n = x.trades_count
+        return x.trades_exit_bar[:n]
+
+    def _trades_last_exit_time(x):
+        n = x.trades_count
+        return x.trades_exit_time[:n]
 
     def _trades_result_chg(x):
         n = x.trades_count
@@ -188,16 +197,8 @@ class BROKER:
 
     def _trades_mae_chg(x):
         n = x.trades_count
-        sign = np.sign(x.trades_volume[:n])
-        long_mae = x.trades_min_price[:n] - x.trades_entry_price[:n]
-        short_mae = x.trades_entry_price[:n] - x.trades_max_price[:n]
-        per_unit_mae = np.where(sign > 0, long_mae, short_mae)
-        return per_unit_mae * np.abs(x.trades_volume[:n])
+        return x.trades_mae_chg[:n]
 
     def _trades_mae_pct(x):
         n = x.trades_count
-        sign = np.sign(x.trades_volume[:n])
-        long_mae = x.trades_min_price[:n] - x.trades_entry_price[:n]
-        short_mae = x.trades_entry_price[:n] - x.trades_max_price[:n]
-        per_unit_mae = np.where(sign > 0, long_mae, short_mae)
-        return per_unit_mae / x.trades_entry_price[:n] * 100.0
+        return x.trades_mae_pct[:n]
