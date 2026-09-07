@@ -96,18 +96,20 @@ class BROKER:
             x.posit_max = bar_high
 
     def _update_trailing_take(x, bar, time, bar_close):
+        # long: take so pode DESCER (aperta em direcao ao preco) | short: take so pode SUBIR
         if np.isnan(x.trail_take_dist):
             return
         if x.posit_volume > 0:
-            candidate = bar_close - x.trail_take_dist
-            if np.isnan(x.posit_take) or candidate > x.posit_take:
-                x.posit_take = candidate
-        elif x.posit_volume < 0:
             candidate = bar_close + x.trail_take_dist
             if np.isnan(x.posit_take) or candidate < x.posit_take:
                 x.posit_take = candidate
+        elif x.posit_volume < 0:
+            candidate = bar_close - x.trail_take_dist
+            if np.isnan(x.posit_take) or candidate > x.posit_take:
+                x.posit_take = candidate
 
     def _update_trailing_stop(x, bar, time, bar_close):
+        # long: stop so pode SUBIR | short: stop so pode DESCER
         if np.isnan(x.trail_stop_dist):
             return
         if x.posit_volume > 0:
@@ -146,12 +148,8 @@ class BROKER:
     def _posit_has(x):
         return x.posit_volume != 0.0
 
-    def _posit_sign_volume(x):
-        if x.posit_volume > 0:
-            return 1
-        elif x.posit_volume < 0:
-            return -1
-        return 0
+    def _posit_signed_volume(x):
+        return x.posit_volume
 
     def _posit_is_long(x):
         return x.posit_volume > 0.0
@@ -179,19 +177,16 @@ class BROKER:
         return x.trades_entry_time[0]
 
     def _trades_result_chg(x):
-        # total de pontos movimentados pela posicao inteira: preco * volume (com sinal)
         n = x.trades_count
         return (x.trades_exit_price[:n] - x.trades_entry_price[:n]) * x.trades_volume[:n]
 
     def _trades_result_pct(x):
-        # retorno percentual e por unidade, nao depende do volume operado
         n = x.trades_count
         sign = np.sign(x.trades_volume[:n])
         per_unit_chg = (x.trades_exit_price[:n] - x.trades_entry_price[:n]) * sign
         return per_unit_chg / x.trades_entry_price[:n] * 100.0
 
     def _trades_mae_chg(x):
-        # MAE total da posicao: MAE por unidade * volume absoluto
         n = x.trades_count
         sign = np.sign(x.trades_volume[:n])
         long_mae = x.trades_min_price[:n] - x.trades_entry_price[:n]
@@ -200,7 +195,6 @@ class BROKER:
         return per_unit_mae * np.abs(x.trades_volume[:n])
 
     def _trades_mae_pct(x):
-        # MAE percentual e por unidade, nao depende do volume operado
         n = x.trades_count
         sign = np.sign(x.trades_volume[:n])
         long_mae = x.trades_min_price[:n] - x.trades_entry_price[:n]
